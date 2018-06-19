@@ -5,6 +5,7 @@ import scala.collection.mutable
 import scala.annotation.tailrec
 import cats._, cats.data._, cats.implicits._
 import coop.rchain.catscontrib.Capture
+import coop.rchain.shared._
 
 trait Keyed {
   def key: Seq[Byte]
@@ -133,7 +134,7 @@ final class PeerTable[A <: PeerNode](home: A, private[discovery] val k: Int, alp
     * If `peer` is already in the table, it becomes the most recently
     * seen entry at its distance.
     */
-  def observe[F[_]: Applicative: Capture: Ping](peer: A, add: Boolean): F[Unit] =
+  def observe[F[_]: Monad: Capture: Ping: Log](peer: A, add: Boolean): F[Unit] =
     distance(home.key, peer.key) match {
       case Some(index) =>
         if (index < 8 * width) {
@@ -141,13 +142,19 @@ final class PeerTable[A <: PeerNode](home: A, private[discovery] val k: Int, alp
           ps synchronized {
             ps.find(_.key == peer.key) match {
               case Some(entry) =>
-                Capture[F].capture {
-                  ps -= entry
-                  ps += entry
-                }
+                for {
+                  _ <- Log[F].info(s"Refreshing peer ${peer.id}")
+                  c <- Capture[F].capture {
+                        ps -= entry
+                        ps += entry
+                      }
+                } yield c
               case None if add =>
                 if (ps.size < k) {
-                  Capture[F].capture(ps += new Entry(peer, _.key))
+                  for {
+                    _ <- Log[F].info(s"Adding peer ${peer.id}")
+                    c <- Capture[F].capture(ps += new Entry(peer, _.key))
+                  } yield c
                 } else {
                   // ping first (oldest) element that isn't already being
                   // pinged. If it responds, move it to back (newest
